@@ -1,0 +1,260 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "metadata": {
+        "title": "CopilotSecIncidentReportJP",
+        "description": "This playbook will generate SendMail from analyzing Copilot for Security",
+        "lastUpdateTime": "2024-04-2T00:00:00.000Z",
+        "tags": [ "Security" ],
+        "author": {
+            "name": "Hisashi Nakada"
+        }
+    },
+    "parameters": {
+        "PlayBookName": {
+            "defaultValue": "CopilotSecIncidentReportJP",
+            "type": "String"
+        },
+        "MailFromAddress": {
+            "defaultValue": "test@test.co.jp",
+            "type": "String"
+        },
+        "MailToAddress": {
+            "defaultValue": "test@test.co.jp",
+            "type": "String"
+        }
+    },
+    "variables": {
+        "MicrosoftSentinelConnectionName":  "[concat('MicrosoftSentinel-', parameters('PlaybookName'))]",
+        "MicrosoftSentinelConnectionApiId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/Azuresentinel')]",
+        "CopilotForSecurityConnectionName":  "[concat('CopilotForSecurity-', parameters('PlaybookName'))]",
+        "CopilotForSecurityConnectionApiId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/Securitycopilot')]"
+    },
+    "resources": [
+        {
+            "name": "[parameters('PlayBookName')]",
+            "type": "Microsoft.Logic/workflows",
+            "location": "[resourceGroup().location]",
+            "apiVersion": "2017-07-01",
+            "dependsOn":  [
+                "[resourceId('Microsoft.Web/connections', variables('MicrosoftSentinelConnectionName'))]",
+                "[resourceId('Microsoft.Web/connections', variables('CopilotForSecurityConnectionName'))]"
+                ],
+            "properties": {
+                "provisioningState":  "Succeeded",
+                "state": "Enabled",
+                "definition": {
+                    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                    "contentVersion": "1.0.0.0",
+                    "parameters": {
+                        "$connections": {
+                            "defaultValue": {},
+                            "type": "Object"
+                        }
+                    },
+                    "triggers": {
+                        "Microsoft_Sentinel_incident": {
+                            "type": "ApiConnectionWebhook",
+                            "inputs": {
+                                "body": {
+                                    "callback_url": "@{listCallbackUrl()}"
+                                },
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                    }
+                                },
+                                "path": "/incident-creation"
+                            }
+                        }
+                    },
+                    "actions": {
+                        "CfSExectiveReport": {
+                            "runAfter": {
+                                "CfSIPv4": [
+                                    "Succeeded",
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "body": {
+                                    "PromptContent": "この調査を要約したエグゼクティブレポートをHTML形式で作成して下さい. セキュリティに詳しくない読者にもわかるように要約して下さい. ",
+                                    "SessionId": "@body('CfSIPv4')?['sessionId']"
+                                },
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['securitycopilot']['connectionId']"
+                                    }
+                                },
+                                "method": "post",
+                                "path": "/process-prompt"
+                            }
+                        },
+                        "CfSGetEntities": {
+                            "runAfter": {
+                                "CfSSummarizeIncident": [
+                                    "Succeeded",
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "body": {
+                                    "PromptContent": "そのインシデントに関連するエンティティ情報についてHTML形式で教えてください",
+                                    "SessionId": "@body('CfSSummarizeIncident')?['sessionId']"
+                                },
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['securitycopilot']['connectionId']"
+                                    }
+                                },
+                                "method": "post",
+                                "path": "/process-prompt"
+                            }
+                        },
+                        "CfSIPv4": {
+                            "runAfter": {
+                                "CfSGetEntities": [
+                                    "Succeeded",
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "body": {
+                                    "PromptContent": "そのインシデントに関する IPv4 アドレスのレピュテーション スコアを調査してHTML形式で教えて下さい",
+                                    "SessionId": "@body('CfSGetEntities')?['sessionId']"
+                                },
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['securitycopilot']['connectionId']"
+                                    }
+                                },
+                                "method": "post",
+                                "path": "/process-prompt"
+                            }
+                        },
+                        "CfSSummarizeIncident": {
+                            "runAfter": {},
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "body": {
+                                    "PromptContent": "Defender のインシデント @{triggerBody()?['object']?['properties']?['incidentNumber']} について200文字で要約してHTML形式で出して下さい。"
+                                },
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['securitycopilot']['connectionId']"
+                                    }
+                                },
+                                "method": "post",
+                                "path": "/process-prompt"
+                            }
+                        },
+                        "RestMsGraph": {
+                            "runAfter": {
+                                "SetHTMLBody": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Http",
+                            "inputs": {
+                                "authentication": {
+                                    "audience": "https://graph.microsoft.com/",
+                                    "type": "ManagedServiceIdentity"
+                                },
+                                "body": {
+                                    "message": {
+                                        "body": {
+                                            "content": "@{variables('HTMLBody')}",
+                                            "contentType": "HTML"
+                                        },
+                                        "subject": "【Copilot for Security 分析結果】[@{triggerBody()?['object']?['properties']?['incidentNumber']}] @{triggerBody()?['object']?['properties']?['title']}",
+                                        "toRecipients": [
+                                            {
+                                                "emailAddress": {
+                                                    "address": "[parameters('MailToAddress')]"
+                                                }
+                                            }
+                                        ]
+                                    },
+                                    "saveToSentItems": "True"
+                                },
+                                "headers": {
+                                    "Content-type": "application/json"
+                                },
+                                "method": "POST",
+                                "uri": "https://graph.microsoft.com/v1.0/users/[parameters('MailFromAddress')]/sendMail"
+                            }
+                        },
+                        "SetHTMLBody": {
+                            "runAfter": {
+                                "CfSExectiveReport": [
+                                    "Succeeded",
+                                    "TimedOut",
+                                    "Failed"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "HTMLBody",
+                                        "type": "string",
+                                        "value": "<!DOCTYPE html>\n<html lang=\"ja\">\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n    <title>セキュリティアラート通知</title>\n    <style>\n        body {\n            font-family: Arial, sans-serif;\n            background-color: #f5f5f5;\n            padding: 20px;\n        }\n        .alert {\n            background-color: #ffffff;\n            border: 1px solid #dddddd;\n            padding: 20px;\n            margin-bottom: 20px;\n        }\n        table {\n            width: 100%;\n            border-collapse: collapse;\n        }\n        th, td {\n            border: 1px solid #dddddd;\n            padding: 8px;\n            text-align: left;\n        }\n    </style>\n</head>\n<body>\n<div class=\"alert\">\n<h1>@{triggerBody()?['object']?['properties']?['title']}</h1>\n<p>以下のセキュリティアラートが検出されました。</p>\n<p>Copilot for Security による分析結果をお知らせします。</p>\n<hr>\n<h2>インシデントサマリー</h2>\n<p>@{body('CfSSummarizeIncident')?['skill Name']}</p>\n@{body('CfSSummarizeIncident')?['Evaluation Result Content']}\n\n<hr>\n<h2>含まれるエンティティ情報</h2>\n<p>@{body('CfSGetEntities')?['skill Name']}</p>\n@{body('CfSGetEntities')?['Evaluation Result Content']}\n\n<hr>\n<h2>含まれる IP 情報の危険度</h2>\n<p>@{body('CfSIPv4')?['skill Name']}</p>\n@{body('CfSIPv4')?['Evaluation Result Content']}\n\n<hr>\n<h2>エグゼクティブレポート</h2>\n<p>@{body('CfSExectiveReport')?['skill Name']}</p>\n@{body('CfSExectiveReport')?['Evaluation Result Content']}\n\n<hr>\n<p>対応が必要な場合は、適切な対応を行ってください。</p>\n</div>\n <p>ご不明点があればお知らせください。</p>\n</body>\n</html>"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "outputs": {}
+                },
+                "parameters": {
+                    "$connections": {
+                        "value": {
+                            "azuresentinel": {
+                                "connectionId": "[resourceId('Microsoft.Web/connections', variables('MicrosoftSentinelConnectionName'))]",
+                                "connectionName": "[variables('MicrosoftSentinelConnectionName')]",
+                                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/Azuresentinel')]"
+                            },
+                            "securitycopilot": {
+                                "connectionId": "[resourceId('Microsoft.Web/connections', variables('CopilotForSecurityConnectionName'))]",
+                                "connectionName": "[variables('CopilotForSecurityConnectionName')]",
+                                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/Securitycopilot')]"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "apiVersion": "2016-06-01",
+            "name": "[variables('MicrosoftSentinelConnectionName')]",
+            "type": "Microsoft.Web/connections",
+            "location": "[resourceGroup().location]",
+            "kind": "V1",
+            "properties": {
+                "displayName": "[variables('MicrosoftSentinelConnectionName')]",
+                "api": {
+                    "id": "[variables('MicrosoftSentinelConnectionApiId')]"
+                }
+            }
+        },
+        {
+            "apiVersion": "2016-06-01",
+            "name": "[variables('CopilotForSecurityConnectionName')]",
+            "type": "Microsoft.Web/connections",
+            "location": "[resourceGroup().location]",
+            "kind": "V1",
+            "properties": {
+                "displayName": "[variables('CopilotForSecurityConnectionName')]",
+                "api": {
+                    "id": "[variables('CopilotForSecurityConnectionApiId')]"
+                }
+            }          
+        }
+    ]
+}
