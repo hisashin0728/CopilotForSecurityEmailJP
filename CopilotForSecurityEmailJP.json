@@ -80,7 +80,7 @@
                             "type": "ApiConnection",
                             "inputs": {
                                 "body": {
-                                    "PromptContent": "この調査を要約したエグゼクティブレポートをHTML形式で作成して下さい. セキュリティに詳しくない読者にもわかるように要約して下さい. ",
+                                    "PromptContent": "この調査を要約したエグゼクティブレポートを作成して下さい. セキュリティに詳しくない読者にもわかるように要約して下さい. ",
                                     "SessionId": "@body('CfSIPv4')?['sessionId']"
                                 },
                                 "host": {
